@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Boids Algorithm</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body,
+      html {
+        height: 100%;
+        overflow: hidden;
+      }
+
+      #screen {
+        width: 100vw;
+        height: 100vh;
+        display: block;
+        background: #000;
+        cursor: pointer;
+      }
+
+      #fps-display {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        color: #00ff88;
+        font-family: "Courier New", monospace;
+        font-size: 16px;
+        font-weight: bold;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 8px 12px;
+        border-radius: 5px;
+        border: 1px solid #00ff88;
+        z-index: 100;
+        user-select: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="screen"></canvas>
+    <div id="fps-display">FPS: --</div>
+  </body>
+  <script type="module">
+    const canvas = document.getElementById("screen");
+    const ctx = canvas.getContext("2d");
+    const fpsDisplay = document.getElementById("fps-display");
+    let width = window.innerWidth;
+    let height = window.innerHeight;
+
+    // FPS tracking variables
+    let frameCount = 0;
+    let lastTime = performance.now();
+    let fps = 0;
+
+    // Set canvas size
+    function resizeCanvas() {
+      canvas.width = width;
+      canvas.height = height;
+    }
+
+    // Initialize canvas
+    resizeCanvas();
+
+    // Update FPS display
+    function updateFPS() {
+      frameCount++;
+      const currentTime = performance.now();
+      const deltaTime = currentTime - lastTime;
+
+      // Update FPS every second
+      if (deltaTime >= 1000) {
+        fps = Math.round((frameCount * 1000) / deltaTime);
+        fpsDisplay.textContent = `FPS: ${fps}`;
+        frameCount = 0;
+        lastTime = currentTime;
+      }
+    }
+
+    // Boid class
+    class Boid {
+      constructor(x, y) {
+        this.position = { x, y };
+        this.velocity = {
+          x: (Math.random() - 0.5) * 4,
+          y: (Math.random() - 0.5) * 4,
+        };
+        this.acceleration = { x: 0, y: 0 };
+        this.maxSpeed = 3;
+        this.maxForce = 0.05;
+        this.perceptionRadius = 50;
+        this.size = 8;
+      }
+
+      // Apply the three rules of boids
+      flock(boids) {
+        const sep = this.separate(boids);
+        const ali = this.align(boids);
+        const coh = this.cohesion(boids);
+
+        // Weight the forces
+        sep.x *= 2.0;
+        sep.y *= 2.0;
+        ali.x *= 1.0;
+        ali.y *= 1.0;
+        coh.x *= 1.0;
+        coh.y *= 1.0;
+
+        this.acceleration.x += sep.x + ali.x + coh.x;
+        this.acceleration.y += sep.y + ali.y + coh.y;
+      }
+
+      // Separation - steer to avoid crowding local flockmates
+      separate(boids) {
+        const desiredSeparation = 25;
+        const steer = { x: 0, y: 0 };
+        let count = 0;
+
+        for (let other of boids) {
+          const d = this.distance(other);
+          if (d > 0 && d < desiredSeparation) {
+            const diff = {
+              x: this.position.x - other.position.x,
+              y: this.position.y - other.position.y,
+            };
+            this.normalize(diff);
+            diff.x /= d; // Weight by distance
+            diff.y /= d;
+            steer.x += diff.x;
+            steer.y += diff.y;
+            count++;
+          }
+        }
+
+        if (count > 0) {
+          steer.x /= count;
+          steer.y /= count;
+          this.normalize(steer);
+          steer.x *= this.maxSpeed;
+          steer.y *= this.maxSpeed;
+          steer.x -= this.velocity.x;
+          steer.y -= this.velocity.y;
+          this.limit(steer, this.maxForce);
+        }
+
+        return steer;
+      }
+
+      // Alignment - steer towards the average heading of neighbors
+      align(boids) {
+        const sum = { x: 0, y: 0 };
+        let count = 0;
+
+        for (let other of boids) {
+          const d = this.distance(other);
+          if (d > 0 && d < this.perceptionRadius) {
+            sum.x += other.velocity.x;
+            sum.y += other.velocity.y;
+            count++;
+          }
+        }
+
+        if (count > 0) {
+          sum.x /= count;
+          sum.y /= count;
+          this.normalize(sum);
+          sum.x *= this.maxSpeed;
+          sum.y *= this.maxSpeed;
+          const steer = {
+            x: sum.x - this.velocity.x,
+            y: sum.y - this.velocity.y,
+          };
+          this.limit(steer, this.maxForce);
+          return steer;
+        }
+
+        return { x: 0, y: 0 };
+      }
+
+      // Cohesion - steer to move toward the average position of neighbors
+      cohesion(boids) {
+        const sum = { x: 0, y: 0 };
+        let count = 0;
+
+        for (let other of boids) {
+          const d = this.distance(other);
+          if (d > 0 && d < this.perceptionRadius) {
+            sum.x += other.position.x;
+            sum.y += other.position.y;
+            count++;
+          }
+        }
+
+        if (count > 0) {
+          sum.x /= count;
+          sum.y /= count;
+          return this.seek(sum);
+        }
+
+        return { x: 0, y: 0 };
+      }
+
+      // Seek a target position
+      seek(target) {
+        const desired = {
+          x: target.x - this.position.x,
+          y: target.y - this.position.y,
+        };
+        this.normalize(desired);
+        desired.x *= this.maxSpeed;
+        desired.y *= this.maxSpeed;
+
+        const steer = {
+          x: desired.x - this.velocity.x,
+          y: desired.y - this.velocity.y,
+        };
+        this.limit(steer, this.maxForce);
+        return steer;
+      }
+
+      // Update position and velocity
+      update() {
+        this.velocity.x += this.acceleration.x;
+        this.velocity.y += this.acceleration.y;
+        this.limit(this.velocity, this.maxSpeed);
+
+        this.position.x += this.velocity.x;
+        this.position.y += this.velocity.y;
+
+        this.acceleration.x = 0;
+        this.acceleration.y = 0;
+
+        // Check if boid is outside screen bounds
+        if (
+          this.position.x < -20 ||
+          this.position.x > width + 20 ||
+          this.position.y < -20 ||
+          this.position.y > height + 20
+        ) {
+          return true; // Mark for removal
+        }
+
+        return false; // Keep this boid
+      }
+
+      // Draw the boid as an arrow on canvas
+      draw(ctx) {
+        const angle = Math.atan2(this.velocity.y, this.velocity.x);
+
+        ctx.save();
+        ctx.translate(this.position.x, this.position.y);
+        ctx.rotate(angle);
+
+        // Draw arrow shape
+        ctx.fillStyle = "#00ff88";
+        ctx.strokeStyle = "#00ff88";
+        ctx.lineWidth = 1;
+
+        ctx.beginPath();
+        // Arrow tip
+        ctx.moveTo(this.size, 0);
+        // Arrow base left
+        ctx.lineTo(-this.size / 2, -this.size / 3);
+        // Arrow base right
+        ctx.lineTo(-this.size / 2, this.size / 3);
+        ctx.closePath();
+
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      // Helper functions
+      distance(other) {
+        const dx = this.position.x - other.position.x;
+        const dy = this.position.y - other.position.y;
+        return Math.sqrt(dx * dx + dy * dy);
+      }
+
+      normalize(vector) {
+        const mag = Math.sqrt(vector.x * vector.x + vector.y * vector.y);
+        if (mag > 0) {
+          vector.x /= mag;
+          vector.y /= mag;
+        }
+      }
+
+      limit(vector, max) {
+        const mag = Math.sqrt(vector.x * vector.x + vector.y * vector.y);
+        if (mag > max) {
+          vector.x = (vector.x / mag) * max;
+          vector.y = (vector.y / mag) * max;
+        }
+      }
+    }
+
+    // Create flock of boids
+    const flock = [];
+    const numBoids = 100;
+    const minBoids = 500; // Minimum number of boids to maintain
+    const maxBoids = 10_000; // Maximum number of boids allowed
+
+    for (let i = 0; i < numBoids; i++) {
+      flock.push(new Boid(Math.random() * width, Math.random() * height));
+    }
+
+    // Function to spawn new boids automatically
+    function spawnBoidsIfNeeded() {
+      if (flock.length < minBoids) {
+        const boidsToSpawn = Math.min(5, minBoids - flock.length);
+
+        for (let i = 0; i < boidsToSpawn; i++) {
+          // Spawn from random edges of the screen
+          let x, y;
+          const edge = Math.floor(Math.random() * 4);
+
+          switch (edge) {
+            case 0: // Top edge
+              x = Math.random() * width;
+              y = -10;
+              break;
+            case 1: // Right edge
+              x = width + 10;
+              y = Math.random() * height;
+              break;
+            case 2: // Bottom edge
+              x = Math.random() * width;
+              y = height + 10;
+              break;
+            case 3: // Left edge
+              x = -10;
+              y = Math.random() * height;
+              break;
+          }
+
+          const newBoid = new Boid(x, y);
+          // Give the new boid some initial velocity towards the screen center
+          const centerX = width / 2;
+          const centerY = height / 2;
+          const dirX = centerX - x;
+          const dirY = centerY - y;
+          const magnitude = Math.sqrt(dirX * dirX + dirY * dirY);
+
+          newBoid.velocity.x = (dirX / magnitude) * 2 + (Math.random() - 0.5);
+          newBoid.velocity.y = (dirY / magnitude) * 2 + (Math.random() - 0.5);
+
+          flock.push(newBoid);
+        }
+      }
+    }
+
+    // Animation loop
+    function animate() {
+      // Update FPS counter
+      updateFPS();
+      // Clear canvas
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, width, height);
+
+      // Update all boids and collect ones to remove
+      for (let i = flock.length - 1; i >= 0; i--) {
+        const boid = flock[i];
+        boid.flock(flock);
+        const shouldRemove = boid.update();
+
+        if (shouldRemove) {
+          // Remove from array
+          flock.splice(i, 1);
+        } else {
+          // Draw the boid
+          boid.draw(ctx);
+        }
+      }
+
+      // Automatically spawn new boids if needed
+      spawnBoidsIfNeeded();
+
+      // Limit maximum boids to prevent performance issues
+      while (flock.length > maxBoids) {
+        flock.shift();
+      }
+
+      requestAnimationFrame(animate);
+    }
+
+    // Start animation
+    animate();
+
+    // Handle mouse clicks to add new boids
+    canvas.addEventListener("click", (event) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+
+      // Only create new boids if under the maximum limit
+      if (flock.length < maxBoids) {
+        const newBoid = new Boid(x, y);
+        flock.push(newBoid);
+      }
+    });
+
+    // Handle mouse drag to add new boids along the path
+    let isMouseDown = false;
+    let lastMouseTime = 0;
+    const mouseThrottle = 50; // Add a new boid every 50ms when mouse drags
+
+    canvas.addEventListener("mousedown", (event) => {
+      isMouseDown = true;
+
+      // Create a boid at the initial click position
+      const rect = canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+
+      if (flock.length < maxBoids) {
+        const newBoid = new Boid(x, y);
+        flock.push(newBoid);
+      }
+    });
+
+    canvas.addEventListener("mouseup", () => {
+      isMouseDown = false;
+    });
+
+    canvas.addEventListener("mouseleave", () => {
+      isMouseDown = false;
+    });
+
+    canvas.addEventListener("mousemove", (event) => {
+      if (!isMouseDown) return; // Only create boids when mouse is pressed down
+
+      const currentTime = Date.now();
+
+      // Only create new boids if under the maximum limit and enough time has passed
+      if (
+        currentTime - lastMouseTime > mouseThrottle &&
+        flock.length < maxBoids
+      ) {
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+
+        // Create a new boid at the mouse position
+        const newBoid = new Boid(x, y);
+        flock.push(newBoid);
+
+        lastMouseTime = currentTime;
+      }
+    });
+
+    // Handle window resize
+    window.addEventListener("resize", () => {
+      const newWidth = window.innerWidth;
+      const newHeight = window.innerHeight;
+
+      // Update global width and height variables
+      width = newWidth;
+      height = newHeight;
+
+      // Update canvas dimensions
+      resizeCanvas();
+    });
+  </script>
+</html>
